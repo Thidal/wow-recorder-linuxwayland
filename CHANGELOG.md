@@ -7,6 +7,18 @@ Notable changes to the native Linux/Wayland application. The format follows
 Release history before the native rewrite belongs to the upstream Electron
 project, [aza547/wow-recorder](https://github.com/aza547/wow-recorder).
 
+## Unreleased
+
+### Added
+- Warcraft Recorder Pro cloud upload, compatible with the Windows app's
+  guild cloud: a Cloud settings page for the account, password and guild,
+  **Upload to cloud** and **Copy share link** in the recording menu, an
+  **Upload** bulk action, optional automatic upload of new recordings, and
+  upload progress on the status card. Share links are copied to the
+  clipboard when you requested the upload. Large files go up in 100 MiB
+  parts on their own thread, so an upload never delays saving the next pull.
+- The Flatpak gains network access (`--share=network`) for the uploads.
+
 ## 1.0.10 - 2026-09-09
 
 ### Added

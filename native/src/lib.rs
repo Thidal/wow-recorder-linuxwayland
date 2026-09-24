@@ -5,6 +5,7 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod activity;
+pub mod cloud;
 pub mod config;
 pub mod coordinator;
 pub mod domain;
@@ -16,3 +17,4 @@ pub mod process;
 pub mod recorder;
 pub mod spelldb;
 pub mod storage;
+pub mod upload;

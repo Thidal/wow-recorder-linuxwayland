@@ -25,6 +25,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.150"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 uuid = { version = "1.18", features = ["v4"] }
 
 [features]

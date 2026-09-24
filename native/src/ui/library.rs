@@ -405,6 +405,8 @@ struct State {
     /// thread avoid rebuilding row metadata for unrelated updates.
     entries: RefCell<Option<Arc<Vec<LibraryEntry>>>>,
     correlations: RefCell<Option<Arc<Vec<warcraft_recorder::domain::CorrelatedActivity>>>>,
+    /// Cloud upload is set up, so the upload actions are offered.
+    cloud_configured: Cell<bool>,
 }
 
 pub struct Library {
@@ -434,6 +436,7 @@ struct Inner {
     bulk_bar: gtk4::Revealer,
     bulk_count: gtk4::Label,
     protect_button: gtk4::Button,
+    upload_button: gtk4::Button,
     delete_button: gtk4::Button,
     state: State,
 }
@@ -534,6 +537,9 @@ impl Library {
         bulk_count.set_hexpand(true);
         bulk_count.set_xalign(0.0);
         let protect_button = gtk4::Button::with_label("Protect");
+        let upload_button = gtk4::Button::with_label("Upload");
+        upload_button.set_tooltip_text(Some("Upload to Warcraft Recorder Pro"));
+        upload_button.set_visible(false);
         let delete_button = gtk4::Button::with_label("Delete");
         delete_button.add_css_class("destructive-action");
         let bulk_inner = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
@@ -543,6 +549,7 @@ impl Library {
         bulk_inner.set_margin_end(12);
         bulk_inner.append(&bulk_count);
         bulk_inner.append(&protect_button);
+        bulk_inner.append(&upload_button);
         bulk_inner.append(&delete_button);
         let bulk_bar = gtk4::Revealer::new();
         bulk_bar.set_child(Some(&bulk_inner));
@@ -577,6 +584,7 @@ impl Library {
             bulk_bar,
             bulk_count,
             protect_button,
+            upload_button,
             delete_button,
             state: State {
                 selected_chips: RefCell::new(Vec::new()),
@@ -590,6 +598,7 @@ impl Library {
                 mutation_pending: Cell::new(false),
                 entries: RefCell::new(None),
                 correlations: RefCell::new(None),
+                cloud_configured: Cell::new(false),
             },
         });
 
@@ -677,6 +686,15 @@ impl Inner {
         let this = Rc::clone(self);
         self.protect_button.connect_clicked(move |_| {
             this.bulk_set_protected();
+        });
+        let this = Rc::clone(self);
+        self.upload_button.connect_clicked(move |_| {
+            let ids: Vec<RecordingId> = this
+                .selected_rows()
+                .iter()
+                .map(|row| row.id.clone())
+                .collect();
+            this.upload(ids);
         });
         let this = Rc::clone(self);
         self.delete_button.connect_clicked(move |_| {
@@ -1003,6 +1021,18 @@ impl Inner {
         dialog.present(Some(&self.widget_root()));
     }
 
+    fn upload(&self, ids: Vec<RecordingId>) {
+        if !ids.is_empty() {
+            (self.sink)(ShellAction::Command(Command::Upload { ids }));
+        }
+    }
+
+    fn share_link(&self, row: &RowModel) {
+        (self.sink)(ShellAction::Command(Command::ShareLink {
+            id: row.id.clone(),
+        }));
+    }
+
     fn reveal(&self, row: &RowModel) {
         let launcher = gtk4::FileLauncher::new(Some(&gio::File::for_path(&row.media_path)));
         let parent = self.widget_root().root().and_downcast::<gtk4::Window>();
@@ -1021,6 +1051,8 @@ impl Inner {
 
     fn apply(self: &Rc<Self>, snapshot: &AppSnapshot) {
         self.state.mutation_pending.set(false);
+        self.state.cloud_configured.set(snapshot.cloud.configured);
+        self.upload_button.set_visible(snapshot.cloud.configured);
         let category = snapshot.config.interface.selected_category.clone();
         let previous = self.state.category.replace(Some(category.clone()));
         let category_changed = previous.as_ref() != Some(&category);
@@ -1415,6 +1447,9 @@ impl Inner {
             "Protect"
         });
         let tag = make("Edit tag");
+        let cloud = self.state.cloud_configured.get();
+        let upload = cloud.then(|| make("Upload to cloud"));
+        let share = cloud.then(|| make("Copy share link"));
         let reveal = make("Reveal in folder");
         let delete = make("Delete");
         delete.add_css_class("destructive-action");
@@ -1433,6 +1468,24 @@ impl Inner {
             pop.popdown();
             this.edit_tag(&r);
         });
+        if let Some(upload) = upload {
+            let this = Rc::clone(self);
+            let r = Rc::clone(row);
+            let pop = popover.clone();
+            upload.connect_clicked(move |_| {
+                pop.popdown();
+                this.upload(vec![r.id.clone()]);
+            });
+        }
+        if let Some(share) = share {
+            let this = Rc::clone(self);
+            let r = Rc::clone(row);
+            let pop = popover.clone();
+            share.connect_clicked(move |_| {
+                pop.popdown();
+                this.share_link(&r);
+            });
+        }
         let this = Rc::clone(self);
         let r = Rc::clone(row);
         let pop = popover.clone();

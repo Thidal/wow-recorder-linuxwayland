@@ -253,6 +253,45 @@ impl Default for InterfaceSettings {
     }
 }
 
+/// Warcraft Recorder Pro cloud account. The password is stored like the rest
+/// of the config, in the owner-only config file, and is never logged.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudSettings {
+    pub enabled: bool,
+    pub account: String,
+    pub password: String,
+    pub guild: String,
+    /// Upload every new automatic recording once it is saved.
+    pub auto_upload: bool,
+}
+
+impl CloudSettings {
+    /// The credentials, when cloud upload is on and fully configured.
+    pub fn credentials(&self) -> Option<crate::cloud::CloudCredentials> {
+        let complete = self.enabled
+            && !self.account.trim().is_empty()
+            && !self.password.is_empty()
+            && !self.guild.trim().is_empty();
+        complete.then(|| crate::cloud::CloudCredentials {
+            user: self.account.trim().to_owned(),
+            password: self.password.clone(),
+            guild: self.guild.trim().to_owned(),
+        })
+    }
+}
+
+impl fmt::Debug for CloudSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CloudSettings")
+            .field("enabled", &self.enabled)
+            .field("account", &self.account)
+            .field("password", &"<redacted>")
+            .field("guild", &self.guild)
+            .field("auto_upload", &self.auto_upload)
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub version: u32,
@@ -268,6 +307,8 @@ pub struct Config {
     /// the dialog still gets one for the version it just updated to.
     #[serde(default)]
     pub last_seen_version: String,
+    #[serde(default)]
+    pub cloud: CloudSettings,
 }
 
 impl Default for Config {
@@ -283,6 +324,7 @@ impl Default for Config {
             validate_log_paths: true,
             // A clean install has no earlier version to report on.
             last_seen_version: crate::VERSION.to_owned(),
+            cloud: CloudSettings::default(),
         }
     }
 }

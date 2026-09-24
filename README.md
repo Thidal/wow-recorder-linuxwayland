@@ -5,7 +5,8 @@ the combat log and saves a video for every raid pull, Mythic+ dungeon, arena,
 solo shuffle and battleground, with a death timeline you can jump through,
 clipping, slow motion, a local-POV switch and a detailed local combat meter.
 
-Linux and Wayland only. Everything stays on your machine.
+Linux and Wayland only. Everything stays on your machine unless you turn on
+Warcraft Recorder Pro upload.
 
 ![Warcraft Recorder library with a selected Mythic+ recording](data/screenshots/warcraft-recorder-library.png)
 
@@ -82,6 +83,25 @@ have it: that is a set of libraries, not the GNOME desktop.
    [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/)
    for one, and without it, closing the window quits the app.
 
+## Sharing through Warcraft Recorder Pro
+
+If your guild has a [Warcraft Recorder Pro](https://warcraftrecorder.com)
+subscription, this fork can upload to it just like the Windows app:
+
+1. In Settings → Cloud, turn on **Upload to Warcraft Recorder Pro** and enter
+   the cloud account name, password and guild name you use in the Windows app.
+   The account needs write access to the guild.
+2. Right-click a recording and choose **Upload to cloud**, or select several
+   and use **Upload** in the selection bar. The status card shows progress;
+   when an upload finishes, its share link is copied to your clipboard.
+3. **Copy share link** on a recording that is already uploaded fetches its
+   link again.
+4. Turn on **Upload new recordings automatically** to upload every new
+   recording once it is saved. Automatic uploads never touch your clipboard.
+
+The password is kept in the app's config file, readable only by you. Nothing is
+sent anywhere unless cloud upload is turned on.
+
 ## Update and uninstall
 
 Updates arrive through your software centre, or:
@@ -132,8 +152,9 @@ See [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) for the workflow and
 
 ## Scope and license
 
-This fork is Linux/Wayland-only and English-only; cloud, account and upload
-features are not part of it. Licensed GPL-3.0-or-later. Capture is
+This fork is Linux/Wayland-only and English-only. Of the upstream cloud
+features, only Warcraft Recorder Pro upload and share links are ported;
+browsing, downloading and deleting cloud videos stay on the website. Licensed GPL-3.0-or-later. Capture is
 [`gpu-screen-recorder`](https://git.dec05eba.com/gpu-screen-recorder/); the
 original [Warcraft Recorder](https://github.com/aza547/wow-recorder) is prior
 art.

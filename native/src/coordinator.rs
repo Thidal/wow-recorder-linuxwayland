@@ -38,6 +38,7 @@ use crate::recorder::{
     StartRequest, Timeouts,
 };
 use crate::storage::{EntryUpdate, LibraryIndex, Storage, now_unix_ms};
+use crate::upload::{UploadAction, UploadEvent, UploadJob, UploadWorker};
 
 /// Force-end an automatic recording after this long without new log data: a
 /// crash/alt-F4 safety net only. WoW flushes the combat log in bursts, so the
@@ -53,6 +54,8 @@ const CAPTURE_STOPPED_PROBLEM: &str = "Screen capture stopped unexpectedly.";
 const CAPTURE_RESTART_FAILED_PROBLEM: &str = "Screen capture could not be restarted.";
 /// Keep queued transcodes finite while preserving the one-worker design.
 const MAX_MEDIA_QUEUE: usize = 16;
+/// Queued cloud uploads, bounded like the media queue.
+const MAX_UPLOAD_QUEUE: usize = 64;
 
 /// How long quitting waits for gpu-screen-recorder to finish writing the
 /// capture it was asked to stop. Long enough for a normal flush, short enough
@@ -95,6 +98,15 @@ pub enum Command {
         ids: Vec<RecordingId>,
     },
     CreateClip(ClipRange),
+    /// Upload the recordings to the Warcraft Recorder Pro cloud; each share
+    /// link is copied once its upload finishes.
+    Upload {
+        ids: Vec<RecordingId>,
+    },
+    /// Fetch and copy the share link of an already uploaded recording.
+    ShareLink {
+        id: RecordingId,
+    },
     SetSelectedCategory {
         category: Category,
     },
@@ -124,6 +136,40 @@ pub struct ActiveRecordingView {
     pub requested_replay_ms: u64,
 }
 
+/// The upload the cloud thread is working on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UploadProgressView {
+    pub id: RecordingId,
+    pub title: String,
+    /// `ShareLink` jobs only fetch a link and report no bytes.
+    pub action: UploadAction,
+    pub sent: u64,
+    pub total: u64,
+}
+
+/// The newest share link the cloud returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareLinkView {
+    pub id: RecordingId,
+    pub title: String,
+    pub url: String,
+    /// Increases with every link, so the shell can tell a new link from a
+    /// snapshot that repeats the last one.
+    pub serial: u64,
+    /// The user asked for it: copy it to the clipboard. Automatic uploads
+    /// never overwrite the clipboard.
+    pub copy: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CloudView {
+    /// Cloud upload is on and has an account, password and guild.
+    pub configured: bool,
+    pub current: Option<UploadProgressView>,
+    pub queued: usize,
+    pub link: Option<ShareLinkView>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppSnapshot {
     pub entries: Arc<Vec<LibraryEntry>>,
@@ -143,6 +189,7 @@ pub struct AppSnapshot {
     pub queued_jobs: usize,
     pub storage_used_bytes: u64,
     pub protected_over_limit: bool,
+    pub cloud: CloudView,
 }
 
 /// GTK-side handle. Dropping it closes the command channel, which stops the
@@ -318,6 +365,13 @@ pub struct Coordinator {
     media_busy: Option<WorkKind>,
     work: Option<WorkProgress>,
 
+    /// `None` once shutdown has released the upload thread.
+    upload_jobs: Option<SyncSender<UploadJob>>,
+    upload_events: Receiver<UploadEvent>,
+    upload_queue: VecDeque<UploadJob>,
+    upload_current: Option<UploadProgressView>,
+    share_link: Option<ShareLinkView>,
+
     problems: Vec<Problem>,
     setup_problems: Vec<ValidationProblem>,
     advanced_logging: Vec<(&'static str, Option<bool>)>,
@@ -362,6 +416,7 @@ impl Coordinator {
             events_tx.clone(),
         )
         .expect("spawn media worker thread");
+        let (upload_jobs, upload_events) = spawn_upload_worker();
 
         Self {
             setup,
@@ -386,6 +441,11 @@ impl Coordinator {
             user_queue: VecDeque::new(),
             media_busy: None,
             work: None,
+            upload_jobs,
+            upload_events,
+            upload_queue: VecDeque::new(),
+            upload_current: None,
+            share_link: None,
             problems,
             setup_problems: Vec::new(),
             advanced_logging: Vec::new(),
@@ -451,8 +511,10 @@ impl Coordinator {
         self.poll_recorder();
         self.poll_logs();
         self.poll_media();
+        self.poll_uploads();
         self.check_deadlines();
         self.dispatch_media();
+        self.dispatch_upload();
         self.publish();
         true
     }
@@ -509,6 +571,12 @@ impl Coordinator {
             }
             Command::Delete { ids } => self.delete_entries(&ids),
             Command::CreateClip(range) => self.queue_clip(&range),
+            Command::Upload { ids } => {
+                for id in ids {
+                    self.queue_upload(&id, UploadAction::Upload, true);
+                }
+            }
+            Command::ShareLink { id } => self.queue_upload(&id, UploadAction::ShareLink, true),
             Command::SetSelectedCategory { category } => {
                 let mut draft = self.config.clone();
                 draft.interface.selected_category = category;
@@ -1172,12 +1240,19 @@ impl Coordinator {
             self.dirty = true;
             match event {
                 MediaEvent::Progress(progress) => self.work = Some(progress),
-                MediaEvent::Completed { entry, .. } => {
+                MediaEvent::Completed { kind, entry } => {
                     self.media_busy = None;
                     self.work = None;
+                    let auto_upload = kind == WorkKind::Finalize
+                        && self.config.cloud.auto_upload
+                        && self.config.cloud.credentials().is_some();
+                    let id = entry.id.clone();
                     // The worker already wrote the sidecar: fold its entry
                     // into the index instead of re-parsing the library.
                     self.index.upsert_entry(*entry);
+                    if auto_upload {
+                        self.queue_upload(&id, UploadAction::Upload, false);
+                    }
                     self.recount();
                     self.enforce_limit();
                 }
@@ -1196,6 +1271,135 @@ impl Coordinator {
                 MediaEvent::Cancelled { .. } => {
                     self.media_busy = None;
                     self.work = None;
+                }
+            }
+        }
+    }
+
+    // --- Cloud uploads ---
+
+    fn queue_upload(&mut self, id: &RecordingId, action: UploadAction, requested: bool) {
+        let Some(credentials) = self.config.cloud.credentials() else {
+            self.push_problem(
+                "Cloud upload is not set up.",
+                Some("Turn on cloud upload and enter the account, password and guild.".to_owned()),
+                Some(RecoveryAction::OpenSettings),
+            );
+            return;
+        };
+        let Some(entry) = self.entry(id).cloned() else {
+            return;
+        };
+        let duplicate = self
+            .upload_current
+            .as_ref()
+            .is_some_and(|current| current.id == *id && current.action == action)
+            || self
+                .upload_queue
+                .iter()
+                .any(|job| job.entry.id == *id && job.action == action);
+        if duplicate {
+            return;
+        }
+        if self.upload_queue.len() >= MAX_UPLOAD_QUEUE {
+            self.push_problem(
+                "The upload queue is full.",
+                Some(format!("{MAX_UPLOAD_QUEUE} uploads are already waiting.")),
+                None,
+            );
+            return;
+        }
+        self.upload_queue.push_back(UploadJob {
+            action,
+            entry: Box::new(entry),
+            credentials,
+            requested,
+        });
+        self.dirty = true;
+    }
+
+    fn dispatch_upload(&mut self) {
+        if self.upload_current.is_some() {
+            return;
+        }
+        let (Some(jobs), Some(job)) = (self.upload_jobs.as_ref(), self.upload_queue.pop_front())
+        else {
+            return;
+        };
+        let view = UploadProgressView {
+            id: job.entry.id.clone(),
+            title: job.entry.title.clone(),
+            action: job.action.clone(),
+            sent: 0,
+            total: 0,
+        };
+        match jobs.try_send(job) {
+            Ok(()) => {
+                self.upload_current = Some(view);
+                self.dirty = true;
+            }
+            Err(TrySendError::Full(job)) => self.upload_queue.push_front(job),
+            Err(TrySendError::Disconnected(_)) => {
+                self.upload_jobs = None;
+                self.upload_queue.clear();
+                self.push_problem("The upload thread stopped.", None, None);
+            }
+        }
+    }
+
+    fn poll_uploads(&mut self) {
+        while let Ok(event) = self.upload_events.try_recv() {
+            self.dirty = true;
+            match event {
+                UploadEvent::Progress { id, sent, total } => {
+                    if let Some(current) = self.upload_current.as_mut().filter(|c| c.id == id) {
+                        current.sent = sent;
+                        current.total = total;
+                    }
+                }
+                UploadEvent::Finished {
+                    id,
+                    title,
+                    link,
+                    link_error,
+                    requested,
+                } => {
+                    self.upload_current = None;
+                    match link {
+                        Some(url) => {
+                            let serial = self.share_link.as_ref().map_or(1, |link| link.serial + 1);
+                            self.share_link = Some(ShareLinkView {
+                                id,
+                                title,
+                                url,
+                                serial,
+                                copy: requested,
+                            });
+                        }
+                        None => self.push_problem(
+                            format!("{title} was uploaded, but no share link was returned."),
+                            link_error,
+                            None,
+                        ),
+                    }
+                }
+                UploadEvent::Failed {
+                    title,
+                    action,
+                    message,
+                    ..
+                } => {
+                    self.upload_current = None;
+                    self.push_problem(
+                        match action {
+                            UploadAction::Upload => format!("{title} could not be uploaded."),
+                            UploadAction::ShareLink => {
+                                format!("No share link for {title}; has it been uploaded?")
+                            }
+                        },
+                        Some(message),
+                        Some(RecoveryAction::OpenSettings),
+                    );
                 }
             }
         }
@@ -1630,6 +1834,12 @@ impl Coordinator {
             queued_jobs: self.finalize_queue.len() + self.user_queue.len(),
             storage_used_bytes: self.storage_used_bytes,
             protected_over_limit: self.protected_over_limit,
+            cloud: CloudView {
+                configured: self.config.cloud.credentials().is_some(),
+                current: self.upload_current.clone(),
+                queued: self.upload_queue.len(),
+                link: self.share_link.clone(),
+            },
         })
     }
 
@@ -1688,6 +1898,10 @@ impl Coordinator {
         if let Err(error) = self.recorder.shutdown() {
             tracing::warn!(?error, "recorder shutdown failed");
         }
+        // Release the upload thread without joining it: an upload in flight
+        // must not hold the window open, and the recording stays on disk.
+        self.upload_jobs = None;
+        self.upload_queue.clear();
         self.armed = false;
         // Finalization gets the media worker's grace period; user jobs cancel.
         self.user_queue.clear();
@@ -1778,6 +1992,23 @@ fn spawn_media_worker(
         .spawn(move || worker.run())
         .map_err(|error| format!("spawn media worker: {error}"))?;
     Ok((jobs, control, join))
+}
+
+/// The upload thread is detached: see `shutdown`.
+fn spawn_upload_worker() -> (Option<SyncSender<UploadJob>>, Receiver<UploadEvent>) {
+    let (jobs, jobs_rx) = mpsc::sync_channel(1);
+    let (events_tx, events) = mpsc::channel();
+    let worker = UploadWorker::new(jobs_rx, events_tx);
+    match std::thread::Builder::new()
+        .name("upload".to_owned())
+        .spawn(move || worker.run())
+    {
+        Ok(_) => (Some(jobs), events),
+        Err(error) => {
+            tracing::warn!(%error, "could not start the upload thread");
+            (None, events)
+        }
+    }
 }
 
 fn enabled_log_sources(config: &Config) -> Vec<(&'static str, GameFlavor, PathBuf)> {

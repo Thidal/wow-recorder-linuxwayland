@@ -19,6 +19,8 @@ finish-args:
   - --device=dri
   # ksni registers only with the desktop's StatusNotifierWatcher.
   - --talk-name=org.kde.StatusNotifierWatcher
+  # Warcraft Recorder Pro uploads: the WCR API and its signed bucket URLs.
+  - --share=network
 
 cleanup:
   - /include

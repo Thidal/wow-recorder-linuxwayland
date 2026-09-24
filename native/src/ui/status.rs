@@ -14,6 +14,7 @@ use warcraft_recorder::config::Config;
 use warcraft_recorder::coordinator::AppSnapshot;
 use warcraft_recorder::domain::{Problem, RecorderStatus, RecoveryAction};
 use warcraft_recorder::storage::now_unix_ms;
+use warcraft_recorder::upload::UploadAction;
 
 use super::{ActionSink, ShellAction};
 
@@ -207,6 +208,34 @@ pub fn view(snapshot: &AppSnapshot) -> StatusView {
     }
 }
 
+/// One line of cloud activity: the upload in progress, else the newest share
+/// link. Empty when there is nothing to say.
+pub fn cloud_line(snapshot: &AppSnapshot) -> String {
+    let cloud = &snapshot.cloud;
+    let queued = match cloud.queued {
+        0 => String::new(),
+        count => format!(" ({count} more queued)"),
+    };
+    if let Some(current) = &cloud.current {
+        return match current.action {
+            UploadAction::ShareLink => {
+                format!("Getting a share link for {}{queued}", current.title)
+            }
+            UploadAction::Upload if current.total > 0 => format!(
+                "Uploading {}: {}%{queued}",
+                current.title,
+                current.sent.saturating_mul(100) / current.total
+            ),
+            UploadAction::Upload => format!("Uploading {}{queued}", current.title),
+        };
+    }
+    match &cloud.link {
+        Some(link) if link.copy => format!("Share link copied: {}", link.url),
+        Some(link) => format!("Uploaded {}: {}", link.title, link.url),
+        None => String::new(),
+    }
+}
+
 /// Format the elapsed anchor as `m:ss` (or `h:mm:ss`) against `now_unix_ms`.
 pub fn elapsed_label(anchor_unix_ms: i64, now_unix_ms: i64) -> String {
     // `saturating_sub` on i64 clamps at i64::MIN, not zero; clamp the elapsed
@@ -253,6 +282,7 @@ pub struct StatusCard {
     elapsed: gtk4::Label,
     spinner: libadwaita::Spinner,
     detail: gtk4::Label,
+    cloud: gtk4::Label,
     force_end: gtk4::Button,
     warnings: gtk4::Box,
     problems_expander: gtk4::Expander,
@@ -309,6 +339,14 @@ impl StatusCard {
         detail.add_css_class("dim-label");
         detail.add_css_class("caption");
 
+        let cloud = gtk4::Label::new(None);
+        cloud.set_xalign(0.0);
+        cloud.set_wrap(true);
+        cloud.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+        cloud.set_selectable(true);
+        cloud.add_css_class("caption");
+        cloud.set_visible(false);
+
         let force_end = gtk4::Button::with_label("Force end");
         force_end.add_css_class("destructive-action");
         force_end.set_halign(gtk4::Align::End);
@@ -351,6 +389,7 @@ impl StatusCard {
 
         widget.append(&title_row);
         widget.append(&detail);
+        widget.append(&cloud);
         widget.append(&force_end);
         widget.append(&warnings);
         widget.append(&problems_expander);
@@ -363,6 +402,7 @@ impl StatusCard {
             elapsed,
             spinner,
             detail,
+            cloud,
             force_end,
             warnings,
             problems_expander,
@@ -398,6 +438,11 @@ impl StatusCard {
         self.title.set_label(&view.title);
         self.detail.set_label(&view.detail);
         self.detail.set_visible(!view.detail.is_empty());
+        let cloud = cloud_line(snapshot);
+        if self.cloud.label() != cloud {
+            self.cloud.set_label(&cloud);
+        }
+        self.cloud.set_visible(!cloud.is_empty());
         self.spinner.set_visible(view.show_spinner);
         self.force_end.set_visible(view.show_force_end);
 

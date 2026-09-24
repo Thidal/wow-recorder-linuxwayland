@@ -458,6 +458,23 @@ pub static PATHS: [PathSpec; 7] = [
     },
 ];
 
+pub static CLOUD_SWITCHES: [SwitchSpec; 2] = [
+    SwitchSpec {
+        field: "cloud.enabled",
+        title: "Upload to Warcraft Recorder Pro",
+        subtitle: "Share recordings through your guild's warcraftrecorder.com cloud",
+        get: |config| config.cloud.enabled,
+        set: |config, value| config.cloud.enabled = value,
+    },
+    SwitchSpec {
+        field: "cloud.auto_upload",
+        title: "Upload new recordings automatically",
+        subtitle: "Clips and existing recordings are uploaded from their menu",
+        get: |config| config.cloud.auto_upload,
+        set: |config, value| config.cloud.auto_upload = value,
+    },
+];
+
 /// Dependency sensitivity: a disabled parent greys its children without
 /// erasing their values.
 pub fn row_sensitive(field: &str, config: &Config) -> bool {
@@ -472,6 +489,9 @@ pub fn row_sensitive(field: &str, config: &Config) -> bool {
         "storage.buffer_dir" => config.storage.separate_buffer_dir,
         "manual.sound" => config.manual.enabled,
         "capture.audio_input" => config.capture.audio_input.is_some(),
+        "cloud.account" | "cloud.password" | "cloud.guild" | "cloud.auto_upload" => {
+            config.cloud.enabled
+        }
         _ => true,
     }
 }
@@ -823,6 +843,56 @@ impl Settings {
         interface_group.add(&tray_note);
         storage_page.add(&interface_group);
 
+        // --- Cloud ----------------------------------------------------------
+        let cloud_page = adw::PreferencesPage::new();
+        let cloud_group = adw::PreferencesGroup::new();
+        cloud_group.set_title("Warcraft Recorder Pro");
+        cloud_group.set_description(Some(
+            "The same cloud account the Windows app uses. Uploads need write access to the guild.",
+        ));
+        cloud_group.add(&switch_row(&CLOUD_SWITCHES[0], &draft, &registry, &refresh));
+        let account_row = adw::EntryRow::new();
+        account_row.set_title("Account name");
+        account_row.set_text(&draft.borrow().cloud.account);
+        {
+            let draft = Rc::clone(&draft);
+            account_row.connect_changed(move |row| {
+                draft.borrow_mut().cloud.account = row.text().to_string();
+            });
+        }
+        registry
+            .borrow_mut()
+            .push(("cloud.account", account_row.clone().upcast()));
+        cloud_group.add(&account_row);
+        let password_row = adw::PasswordEntryRow::new();
+        password_row.set_title("Password");
+        password_row.set_text(&draft.borrow().cloud.password);
+        {
+            let draft = Rc::clone(&draft);
+            password_row.connect_changed(move |row| {
+                draft.borrow_mut().cloud.password = row.text().to_string();
+            });
+        }
+        registry
+            .borrow_mut()
+            .push(("cloud.password", password_row.clone().upcast()));
+        cloud_group.add(&password_row);
+        let guild_row = adw::EntryRow::new();
+        guild_row.set_title("Guild name");
+        guild_row.set_text(&draft.borrow().cloud.guild);
+        {
+            let draft = Rc::clone(&draft);
+            guild_row.connect_changed(move |row| {
+                draft.borrow_mut().cloud.guild = row.text().to_string();
+            });
+        }
+        registry
+            .borrow_mut()
+            .push(("cloud.guild", guild_row.clone().upcast()));
+        cloud_group.add(&guild_row);
+        cloud_group.add(&switch_row(&CLOUD_SWITCHES[1], &draft, &registry, &refresh));
+        cloud_page.add(&cloud_group);
+
         // --- Dialog scaffolding -------------------------------------------
         for (page, name, title, icon) in [
             (
@@ -844,6 +914,7 @@ impl Settings {
                 "Storage & interface",
                 "drive-harddisk-symbolic",
             ),
+            (&cloud_page, "cloud", "Cloud", "send-to-symbolic"),
         ] {
             let stack_page = stack.add_titled(page, Some(name), title);
             stack_page.set_icon_name(Some(icon));

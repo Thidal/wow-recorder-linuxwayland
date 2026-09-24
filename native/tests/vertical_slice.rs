@@ -275,6 +275,7 @@ fn empty_snapshot() -> AppSnapshot {
         queued_jobs: 0,
         storage_used_bytes: 0,
         protected_over_limit: false,
+        cloud: Default::default(),
     }
 }
 

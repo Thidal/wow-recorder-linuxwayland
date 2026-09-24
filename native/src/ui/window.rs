@@ -179,6 +179,9 @@ pub struct Shell {
     sink: ActionSink,
     /// One release-notes dialog per process, on the same terms.
     release_notes_shown: Cell<bool>,
+    /// Serial of the newest share link already handled, so a repeated
+    /// snapshot never copies the same link twice.
+    share_link_serial: Cell<u64>,
 }
 
 impl Shell {
@@ -447,6 +450,7 @@ impl Shell {
             hold_guard: Rc::new(RefCell::new(None)),
             sink,
             release_notes_shown: Cell::new(false),
+            share_link_serial: Cell::new(0),
         };
         shell.connect_close_request();
         shell.connect_minimize();
@@ -510,6 +514,13 @@ impl Shell {
         *self.latest_snapshot.borrow_mut() = Some(Arc::clone(snapshot));
         if let Some(settings) = self.settings.borrow().as_ref() {
             settings.apply_snapshot(snapshot);
+        }
+
+        if let Some(link) = &snapshot.cloud.link
+            && link.serial > self.share_link_serial.replace(link.serial)
+            && link.copy
+        {
+            self.window.clipboard().set_text(&link.url);
         }
 
         self.setup_banner.set_revealed(view.setup_banner.is_some());
@@ -828,6 +839,7 @@ pub(crate) mod tests {
             queued_jobs: 0,
             storage_used_bytes: 0,
             protected_over_limit: false,
+            cloud: Default::default(),
         }
     }
 
