@@ -302,7 +302,14 @@ fn single_part_upload_puts_fixed_length_media_then_posts_metadata() {
     // The API needs these for the website to group and date the video.
     assert_eq!(metadata["uniqueHash"], "6646616475d036a57a333dc1fa19e60f");
     assert_eq!(metadata["start"], 1_790_276_105_689_i64);
-    assert!(metadata.get("videoName").is_none());
+    assert_eq!(
+        metadata["videoKey"],
+        "activity-1 - Loudfarts - Sszorak [M] (Wipe).mp4"
+    );
+    assert_eq!(
+        metadata["videoName"],
+        "activity-1 - Loudfarts - Sszorak [M] (Wipe)"
+    );
 
     let link = client.share_link(&entry).unwrap();
     assert_eq!(link, "https://website.test/link/abc123");

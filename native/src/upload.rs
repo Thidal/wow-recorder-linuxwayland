@@ -96,7 +96,9 @@ impl UploadWorker {
             if let Err(error) = client.check_access() {
                 return failed(error.to_string());
             }
-            let mut last_sent = Instant::now() - PROGRESS_INTERVAL;
+            let mut last_sent = Instant::now()
+                .checked_sub(PROGRESS_INTERVAL)
+                .unwrap_or_else(Instant::now);
             let mut progress = |sent: u64, total: u64| {
                 if sent < total && last_sent.elapsed() < PROGRESS_INTERVAL {
                     return;

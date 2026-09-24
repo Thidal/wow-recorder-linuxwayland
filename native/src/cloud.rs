@@ -519,8 +519,8 @@ fn video_name(entry: &LibraryEntry) -> Result<String, CloudError> {
 
 // --- Legacy metadata ---
 
-/// The video's metadata in the Electron sidecar shape the WCR API stores,
-/// carrying only the keys the Electron client sends: the API maps them onto
+/// The video's `CloudMetadata`: the Electron sidecar shape plus the video's
+/// key and name, carrying only the keys the Electron client sends: the API maps them onto
 /// table columns, so an unknown key is a failed insert.
 pub fn cloud_metadata(entry: &LibraryEntry, size: u64) -> Value {
     let mut map = Map::new();
@@ -554,6 +554,12 @@ pub fn cloud_metadata(entry: &LibraryEntry, size: u64) -> Value {
         json!(entry.activity_hash.clone().unwrap_or_default()),
     );
     map.insert("size".into(), json!(size));
+    // `CloudMetadata` adds the object key the media was uploaded under and
+    // the name the website and share links address the video by.
+    if let (Ok(key), Ok(name)) = (video_key(entry), video_name(entry)) {
+        map.insert("videoKey".into(), json!(key));
+        map.insert("videoName".into(), json!(name));
+    }
 
     if let Some(player) = &entry.player {
         let mut raw = Map::new();
